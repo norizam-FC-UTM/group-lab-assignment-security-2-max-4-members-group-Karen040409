@@ -1,0 +1,16 @@
+# Frontend dependencies and build output
+vuefrontend/node_modules/
+vuefrontend/dist/
+
+# Backend dependencies
+slimbackend/vendor/
+
+# Environment files
+.env
+
+# Logs
+*.log
+
+# Editor folders
+.vscode/
+.idea/
