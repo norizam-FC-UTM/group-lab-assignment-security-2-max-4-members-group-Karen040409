@@ -1,19 +1,69 @@
 <?php
 
-function sanitizeUser(?array $user): ?array
+const USER_SENSITIVE_FIELDS = ['password', 'password_hash', 'reset_token'];
+const PERSON_SELECT_COLUMNS = 'id, user_id, name, age, height, weight, bmi, category, notes';
+
+function formatPublicUser(?array $user): ?array
 {
     if (!$user) {
         return null;
     }
 
-    unset($user['password'], $user['password_hash']);
+    return [
+        'id' => (int) $user['id'],
+        'name' => $user['name'],
+        'email' => $user['email'],
+        'role' => $user['role'],
+    ];
+}
 
-    return $user;
+function formatPublicUsers(array $users): array
+{
+    return array_values(array_filter(array_map('formatPublicUser', $users)));
+}
+
+function sanitizeUser(?array $user): ?array
+{
+    return formatPublicUser($user);
 }
 
 function sanitizeUsers(array $users): array
 {
-    return array_map('sanitizeUser', $users);
+    return formatPublicUsers($users);
+}
+
+function formatPersonRecord(?array $person): ?array
+{
+    if (!$person) {
+        return null;
+    }
+
+    return [
+        'id' => (int) $person['id'],
+        'user_id' => (int) $person['user_id'],
+        'name' => $person['name'],
+        'age' => (int) $person['age'],
+        'height' => (float) $person['height'],
+        'weight' => (float) $person['weight'],
+        'bmi' => (float) $person['bmi'],
+        'category' => $person['category'],
+        'notes' => $person['notes'] ?? '',
+    ];
+}
+
+function formatPersonRecords(array $persons): array
+{
+    return array_values(array_filter(array_map('formatPersonRecord', $persons)));
+}
+
+function logInternalError(Throwable $e): void
+{
+    error_log(sprintf(
+        '[Person BMI API] %s in %s:%d',
+        $e->getMessage(),
+        $e->getFile(),
+        $e->getLine()
+    ));
 }
 
 function validatePersonData(array $data): array
@@ -158,10 +208,10 @@ function isValidRole(string $role): bool
 
 function fetchPersonById(PDO $pdo, $id): ?array
 {
-    $table = 'person' . 's';
-    $stmt = $pdo->prepare("SELECT * FROM {$table} WHERE id = :id");
+    $sql = 'SELECT ' . PERSON_SELECT_COLUMNS . ' FROM persons WHERE id = :id';
+    $stmt = $pdo->prepare($sql);
     $stmt->execute(['id' => $id]);
     $person = $stmt->fetch();
 
-    return $person ?: null;
+    return $person ? formatPersonRecord($person) : null;
 }

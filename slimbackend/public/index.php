@@ -23,9 +23,8 @@ $app = AppFactory::create();
 // Required for JSON/form body parsing in Slim 4.
 $app->addBodyParsingMiddleware();
 
-// Helpful for development error display.
-// INSECURE: In production, detailed errors should not be shown to users.
-$app->addErrorMiddleware(true, true, true);
+// Log errors server-side; do not expose details to API clients.
+$app->addErrorMiddleware(true, false, false);
 
 // ----------------------------------------------------------
 // CORS for Vue CLI frontend
@@ -78,14 +77,11 @@ function getRequestData(Request $request): array
     return is_array($data) ? $data : [];
 }
 
-function exposeException(Response $response, Throwable $e): Response
+function handleApiException(Response $response, Throwable $e): Response
 {
-    // INSECURE: exposes detailed internal error to API client.
-    return jsonResponse($response, [
-        'error' => $e->getMessage(),
-        'file' => $e->getFile(),
-        'line' => $e->getLine()
-    ], 500);
+    logInternalError($e);
+
+    return jsonResponse($response, ['error' => 'Unable to process request'], 500);
 }
 
 // ----------------------------------------------------------
@@ -113,11 +109,16 @@ $app->post('/api/register', function (Request $request, Response $response) {
         $pdo = getPDO();
         $data = getRequestData($request);
 
-        // INSECURE: Role is accepted from frontend, so user can register as admin/staff.
-        $name = $data['name'] ?? '';
-        $email = $data['email'] ?? '';
-        $password = $data['password'] ?? '';
-        $role = $data['role'] ?? 'user';
+        // Registration always creates a standard user account.
+        $name = trim((string) ($data['name'] ?? ''));
+        $email = trim((string) ($data['email'] ?? ''));
+        $password = (string) ($data['password'] ?? '');
+
+        if ($name === '' || $email === '' || $password === '') {
+            return jsonResponse($response, ['error' => 'Name, email, and password are required'], 400);
+        }
+
+        $role = 'user';
         $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 
         $sql = 'INSERT INTO users (name, email, password, password_hash, role)
@@ -132,18 +133,16 @@ $app->post('/api/register', function (Request $request, Response $response) {
         ]);
         $id = $pdo->lastInsertId();
 
-        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+        $stmt = $pdo->prepare('SELECT id, name, email, role FROM users WHERE id = :id');
         $stmt->execute(['id' => $id]);
-        $user = sanitizeUser($stmt->fetch());
+        $user = formatPublicUser($stmt->fetch());
 
         return jsonResponse($response, [
-            'message' => 'User registered. This route is intentionally insecure.',
+            'message' => 'User registered.',
             'user' => $user,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
         ], 201);
     } catch (Throwable $e) {
-        return exposeException($response, $e);
+        return handleApiException($response, $e);
     }
 });
 
@@ -158,17 +157,13 @@ $app->post('/api/login', function (Request $request, Response $response) {
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
 
-        $sql = 'SELECT * FROM users WHERE email = :email LIMIT 1';
+        $sql = 'SELECT id, name, email, password_hash, role FROM users WHERE email = :email LIMIT 1';
         $stmt = $pdo->prepare($sql);
         $stmt->execute(['email' => $email]);
         $user = $stmt->fetch();
 
         if (!$user || !password_verify($password, $user['password_hash'])) {
-            return jsonResponse($response, [
-                'error' => 'Invalid login',
-                'debug_received_body' => $data,
-                'debug_sql' => $sql
-            ], 401);
+            return jsonResponse($response, ['error' => 'Invalid login'], 401);
         }
 
         $token = createJwtToken($user);
@@ -176,12 +171,10 @@ $app->post('/api/login', function (Request $request, Response $response) {
         return jsonResponse($response, [
             'message' => 'Login successful.',
             'token' => $token,
-            'user' => sanitizeUser($user),
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
+            'user' => formatPublicUser($user),
         ]);
     } catch (Throwable $e) {
-        return exposeException($response, $e);
+        return handleApiException($response, $e);
     }
 });
 
@@ -204,7 +197,7 @@ $app->group('/api', function ($group) {
 
             return jsonResponse($response, $user);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -214,17 +207,17 @@ $app->group('/api', function ($group) {
 
             $userId = getAuthUserId($request);
 
-            $sql = 'SELECT * FROM persons WHERE user_id = :user_id ORDER BY id DESC';
+            $sql = 'SELECT ' . PERSON_SELECT_COLUMNS . ' FROM persons WHERE user_id = :user_id ORDER BY id DESC';
             $stmt = $pdo->prepare($sql);
             $stmt->execute(['user_id' => $userId]);
-            $persons = $stmt->fetchAll();
+            $persons = formatPersonRecords($stmt->fetchAll());
 
             return jsonResponse($response, [
                 'message' => 'BMI records returned.',
                 'persons' => $persons,
             ]);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -264,7 +257,7 @@ $app->group('/api', function ($group) {
                 'person' => $person,
             ], 201);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -288,7 +281,7 @@ $app->group('/api', function ($group) {
                 'person' => $person,
             ]);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -357,7 +350,7 @@ $app->group('/api', function ($group) {
                 'person' => $person,
             ]);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -383,7 +376,7 @@ $app->group('/api', function ($group) {
                 'message' => 'BMI record deleted.',
             ]);
         } catch (Throwable $e) {
-            return exposeException($response, $e);
+            return handleApiException($response, $e);
         }
     });
 
@@ -392,19 +385,18 @@ $app->group('/api', function ($group) {
             try {
                 $pdo = getPDO();
 
-                $sql = "SELECT persons.*, users.email AS owner_email, users.role AS owner_role
+                $sql = 'SELECT ' . PERSON_SELECT_COLUMNS . '
                         FROM persons
-                        JOIN users ON persons.user_id = users.id
-                        ORDER BY persons.id DESC";
+                        ORDER BY id DESC';
 
-                $persons = $pdo->query($sql)->fetchAll();
+                $persons = formatPersonRecords($pdo->query($sql)->fetchAll());
 
                 return jsonResponse($response, [
                     'message' => 'All BMI records returned.',
                     'persons' => $persons,
                 ]);
             } catch (Throwable $e) {
-                return exposeException($response, $e);
+                return handleApiException($response, $e);
             }
         });
 
@@ -413,14 +405,11 @@ $app->group('/api', function ($group) {
                 $pdo = getPDO();
                 $id = $args['id'];
 
-                $sql = 'SELECT persons.*, users.email AS owner_email, users.role AS owner_role
-                        FROM persons
-                        JOIN users ON persons.user_id = users.id
-                        WHERE persons.id = :id';
+                $sql = 'SELECT ' . PERSON_SELECT_COLUMNS . ' FROM persons WHERE id = :id';
 
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute(['id' => $id]);
-                $person = $stmt->fetch();
+                $person = formatPersonRecord($stmt->fetch());
 
                 if (!$person) {
                     return jsonResponse($response, ['error' => 'Record not found'], 404);
@@ -431,7 +420,7 @@ $app->group('/api', function ($group) {
                     'person' => $person,
                 ]);
             } catch (Throwable $e) {
-                return exposeException($response, $e);
+                return handleApiException($response, $e);
             }
         });
     })->add(requireRolesMiddleware(['staff', 'admin']));
@@ -441,16 +430,16 @@ $app->group('/api', function ($group) {
             try {
                 $pdo = getPDO();
 
-                $sql = 'SELECT * FROM users ORDER BY id ASC';
+                $sql = 'SELECT id, name, email, role FROM users ORDER BY id ASC';
                 $stmt = $pdo->query($sql);
-                $users = sanitizeUsers($stmt->fetchAll());
+                $users = formatPublicUsers($stmt->fetchAll());
 
                 return jsonResponse($response, [
                     'message' => 'All users returned.',
                     'users' => $users,
                 ]);
             } catch (Throwable $e) {
-                return exposeException($response, $e);
+                return handleApiException($response, $e);
             }
         });
 
@@ -472,9 +461,9 @@ $app->group('/api', function ($group) {
                     'id' => $id,
                 ]);
 
-                $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+                $stmt = $pdo->prepare('SELECT id, name, email, role FROM users WHERE id = :id');
                 $stmt->execute(['id' => $id]);
-                $user = sanitizeUser($stmt->fetch());
+                $user = formatPublicUser($stmt->fetch());
 
                 if (!$user) {
                     return jsonResponse($response, ['error' => 'User not found'], 404);
@@ -485,7 +474,7 @@ $app->group('/api', function ($group) {
                     'user' => $user,
                 ]);
             } catch (Throwable $e) {
-                return exposeException($response, $e);
+                return handleApiException($response, $e);
             }
         });
 
@@ -507,7 +496,7 @@ $app->group('/api', function ($group) {
                     'message' => 'BMI record deleted.',
                 ]);
             } catch (Throwable $e) {
-                return exposeException($response, $e);
+                return handleApiException($response, $e);
             }
         });
     })->add(requireRolesMiddleware(['admin']));
