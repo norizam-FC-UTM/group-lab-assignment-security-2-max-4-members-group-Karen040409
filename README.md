@@ -6,8 +6,6 @@ This repository contains an **intentionally insecure** Person BMI web applicatio
 
 The application allows users to register, log in, and manage BMI records. It contains deliberate security weaknesses that students are expected to investigate, document, and fix in later commits.
 
-> **Warning:** Do not deploy this application to a public server. It is for local lab use only.
-
 ---
 
 ## Project Structure
