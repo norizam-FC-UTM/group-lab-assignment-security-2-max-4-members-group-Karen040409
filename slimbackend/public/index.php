@@ -15,6 +15,7 @@ use Slim\Factory\AppFactory;
 
 require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../src/db.php';
+require __DIR__ . '/../src/helpers.php';
 
 $app = AppFactory::create();
 
@@ -143,25 +144,28 @@ $app->post('/api/register', function (Request $request, Response $response) {
         $pdo = getPDO();
         $data = getRequestData($request);
 
-        // INSECURE:
-        // - No backend validation.
-        // - Role is accepted from frontend, so user can register as admin/staff.
-        // - Password is stored as plain text.
-        // - password_hash is intentionally filled with the same plain password for investigation.
+        // INSECURE: Role is accepted from frontend, so user can register as admin/staff.
         $name = $data['name'] ?? '';
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
         $role = $data['role'] ?? 'user';
+        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 
-        $sql = "INSERT INTO users (name, email, password, password_hash, role)
-                VALUES ('$name', '$email', '$password', '$password', '$role')";
+        $sql = 'INSERT INTO users (name, email, password, password_hash, role)
+                VALUES (:name, :email, NULL, :password_hash, :role)';
 
-        // INSECURE: direct SQL execution with user input.
-        $pdo->exec($sql);
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            'name' => $name,
+            'email' => $email,
+            'password_hash' => $passwordHash,
+            'role' => $role,
+        ]);
         $id = $pdo->lastInsertId();
 
-        // INSECURE: returns password/password_hash.
-        $user = $pdo->query("SELECT * FROM users WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $user = sanitizeUser($stmt->fetch());
 
         return jsonResponse($response, [
             'message' => 'User registered. This route is intentionally insecure.',
@@ -185,15 +189,12 @@ $app->post('/api/login', function (Request $request, Response $response) {
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
 
-        // INSECURE:
-        // - SQL Injection risk.
-        // - Plain password check.
-        // - No password_hash/password_verify.
-        // Example test: email = ali@example.com' --
-        $sql = "SELECT * FROM users WHERE email = '$email' AND password = '$password' LIMIT 1";
-        $user = $pdo->query($sql)->fetch();
+        $sql = 'SELECT * FROM users WHERE email = :email LIMIT 1';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['email' => $email]);
+        $user = $stmt->fetch();
 
-        if (!$user) {
+        if (!$user || !password_verify($password, $user['password_hash'])) {
             return jsonResponse($response, [
                 'error' => 'Invalid login',
                 'debug_received_body' => $data,
@@ -207,7 +208,7 @@ $app->post('/api/login', function (Request $request, Response $response) {
         return jsonResponse($response, [
             'message' => 'Login successful. This token is intentionally insecure.',
             'token' => $token,
-            'user' => $user, // INSECURE: exposes all user fields.
+            'user' => sanitizeUser($user),
             'debug_received_body' => $data,
             'debug_sql' => $sql
         ]);
@@ -229,8 +230,9 @@ $app->get('/api/profile', function (Request $request, Response $response) {
         $fakeUser = getFakeUserFromToken($request);
         $userId = $fakeUser['user_id'] ?? 1;
 
-        // INSECURE: SELECT * returns password/password_hash.
-        $user = $pdo->query("SELECT * FROM users WHERE id = $userId")->fetch();
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+        $stmt->execute(['id' => $userId]);
+        $user = sanitizeUser($stmt->fetch());
 
         return jsonResponse($response, [
             'message' => 'Profile returned. This route trusts insecure token/default user.',
@@ -257,12 +259,15 @@ $app->get('/api/persons', function (Request $request, Response $response) {
         $userId = $params['user_id'] ?? ($fakeUser['user_id'] ?? null);
 
         if ($userId) {
-            $sql = "SELECT * FROM persons WHERE user_id = $userId ORDER BY id DESC";
+            $sql = 'SELECT * FROM persons WHERE user_id = :user_id ORDER BY id DESC';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(['user_id' => $userId]);
         } else {
-            $sql = "SELECT * FROM persons ORDER BY id DESC";
+            $sql = 'SELECT * FROM persons ORDER BY id DESC';
+            $stmt = $pdo->query($sql);
         }
 
-        $persons = $pdo->query($sql)->fetchAll();
+        $persons = $stmt->fetchAll();
 
         return jsonResponse($response, [
             'message' => 'BMI records returned. This route is intentionally weak.',
@@ -279,30 +284,38 @@ $app->post('/api/persons', function (Request $request, Response $response) {
         $pdo = getPDO();
         $data = getRequestData($request);
 
-        // INSECURE:
-        // - No backend validation.
-        // - Trusts user_id from frontend.
-        // - Trusts bmi and category from frontend.
-        // - Does not calculate BMI at backend.
+        $errors = validatePersonData($data);
+        if (!empty($errors)) {
+            return jsonResponse($response, ['errors' => $errors], 400);
+        }
+
+        // INSECURE: Trusts user_id from frontend.
         $user_id = $data['user_id'] ?? 1;
-        $name = $data['name'] ?? '';
-        $age = $data['age'] ?? 0;
-        $height = $data['height'] ?? 0;
-        $weight = $data['weight'] ?? 0;
-        $bmi = $data['bmi'] ?? 0;
-        $category = $data['category'] ?? '';
-        $notes = $data['notes'] ?? '';
+        $fields = normalizedPersonFields($data);
+        $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
 
-        $sql = "INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
-                VALUES ($user_id, '$name', $age, $height, $weight, $bmi, '$category', '$notes')";
+        $sql = 'INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
+                VALUES (:user_id, :name, :age, :height, :weight, :bmi, :category, :notes)';
 
-        $pdo->exec($sql);
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            'user_id' => $user_id,
+            'name' => $fields['name'],
+            'age' => $fields['age'],
+            'height' => $fields['height'],
+            'weight' => $fields['weight'],
+            'bmi' => $calculated['bmi'],
+            'category' => $calculated['category'],
+            'notes' => $fields['notes'],
+        ]);
         $id = $pdo->lastInsertId();
 
-        $person = $pdo->query("SELECT * FROM persons WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $person = $stmt->fetch();
 
         return jsonResponse($response, [
-            'message' => 'BMI record created. This route trusts frontend data.',
+            'message' => 'BMI record created. BMI and category calculated at backend.',
             'person' => $person,
             'debug_received_body' => $data,
             'debug_sql' => $sql
@@ -318,8 +331,10 @@ $app->get('/api/persons/{id}', function (Request $request, Response $response, a
         $id = $args['id'];
 
         // TODO: Review whether this route should allow all users to access any record.
-        $sql = "SELECT * FROM persons WHERE id = $id";
-        $person = $pdo->query($sql)->fetch();
+        $sql = 'SELECT * FROM persons WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['id' => $id]);
+        $person = $stmt->fetch();
 
         if (!$person) {
             return jsonResponse($response, ['error' => 'Record not found'], 404);
@@ -341,49 +356,85 @@ $app->put('/api/persons/{id}', function (Request $request, Response $response, a
         $id = $args['id'];
         $data = getRequestData($request);
 
-        // INSECURE MASS ASSIGNMENT:
-        // Updates almost any field sent by the frontend.
-        // You should whitelist allowed fields and calculate bmi/category at backend.
         $allowedInInsecureStarter = [
             'user_id',
             'name',
             'age',
             'height',
             'weight',
-            'bmi',
-            'category',
             'notes'
         ];
 
-        $sets = [];
-
+        $hasUpdateField = false;
         foreach ($allowedInInsecureStarter as $field) {
             if (array_key_exists($field, $data)) {
-                $value = $data[$field];
-
-                if (is_numeric($value)) {
-                    $sets[] = "$field = $value";
-                } else {
-                    $escaped = str_replace("'", "''", (string) $value);
-                    $sets[] = "$field = '$escaped'";
-                }
+                $hasUpdateField = true;
+                break;
             }
         }
 
-        if (!$sets) {
+        if (!$hasUpdateField) {
             return jsonResponse($response, [
                 'error' => 'No fields to update',
                 'debug_received_body' => $data
             ], 400);
         }
 
-        $sql = "UPDATE persons SET " . implode(', ', $sets) . " WHERE id = $id";
-        $pdo->exec($sql);
+        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $existing = $stmt->fetch();
 
-        $person = $pdo->query("SELECT * FROM persons WHERE id = $id")->fetch();
+        if (!$existing) {
+            return jsonResponse($response, ['error' => 'Record not found'], 404);
+        }
+
+        $merged = [
+            'name' => array_key_exists('name', $data) ? $data['name'] : $existing['name'],
+            'age' => array_key_exists('age', $data) ? $data['age'] : $existing['age'],
+            'height' => array_key_exists('height', $data) ? $data['height'] : $existing['height'],
+            'weight' => array_key_exists('weight', $data) ? $data['weight'] : $existing['weight'],
+            'notes' => array_key_exists('notes', $data) ? $data['notes'] : $existing['notes'],
+        ];
+
+        $errors = validatePersonData($merged);
+        if (!empty($errors)) {
+            return jsonResponse($response, ['errors' => $errors], 400);
+        }
+
+        $fields = normalizedPersonFields($merged);
+        $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
+        $user_id = array_key_exists('user_id', $data) ? $data['user_id'] : $existing['user_id'];
+
+        $sql = 'UPDATE persons
+                SET user_id = :user_id,
+                    name = :name,
+                    age = :age,
+                    height = :height,
+                    weight = :weight,
+                    bmi = :bmi,
+                    category = :category,
+                    notes = :notes
+                WHERE id = :id';
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            'user_id' => $user_id,
+            'name' => $fields['name'],
+            'age' => $fields['age'],
+            'height' => $fields['height'],
+            'weight' => $fields['weight'],
+            'bmi' => $calculated['bmi'],
+            'category' => $calculated['category'],
+            'notes' => $fields['notes'],
+            'id' => $id,
+        ]);
+
+        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $person = $stmt->fetch();
 
         return jsonResponse($response, [
-            'message' => 'BMI record updated. This route allows unsafe field updates.',
+            'message' => 'BMI record updated. BMI and category recalculated at backend.',
             'person' => $person,
             'debug_received_body' => $data,
             'debug_sql' => $sql
@@ -399,8 +450,9 @@ $app->delete('/api/persons/{id}', function (Request $request, Response $response
         $id = $args['id'];
 
         // INSECURE: No auth, no ownership check, no role check.
-        $sql = "DELETE FROM persons WHERE id = $id";
-        $pdo->exec($sql);
+        $sql = 'DELETE FROM persons WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['id' => $id]);
 
         return jsonResponse($response, [
             'message' => 'BMI record deleted without role or ownership check.',
@@ -442,12 +494,14 @@ $app->get('/api/staff/persons/{id}', function (Request $request, Response $respo
         $id = $args['id'];
 
         // INSECURE - Review whether this route should allow all users
-        $sql = "SELECT persons.*, users.email AS owner_email, users.role AS owner_role
+        $sql = 'SELECT persons.*, users.email AS owner_email, users.role AS owner_role
                 FROM persons
                 JOIN users ON persons.user_id = users.id
-                WHERE persons.id = $id";
+                WHERE persons.id = :id';
 
-        $person = $pdo->query($sql)->fetch();
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['id' => $id]);
+        $person = $stmt->fetch();
 
         if (!$person) {
             return jsonResponse($response, ['error' => 'Record not found'], 404);
@@ -472,12 +526,12 @@ $app->get('/api/admin/users', function (Request $request, Response $response) {
 
         // INSECURE:
         // - No admin role check.
-        // - SELECT * exposes password/password_hash.
-        $sql = "SELECT * FROM users ORDER BY id ASC";
-        $users = $pdo->query($sql)->fetchAll();
+        $sql = 'SELECT * FROM users ORDER BY id ASC';
+        $stmt = $pdo->query($sql);
+        $users = sanitizeUsers($stmt->fetchAll());
 
         return jsonResponse($response, [
-            'message' => 'All users returned without admin role check. Sensitive fields exposed.',
+            'message' => 'All users returned without admin role check.',
             'users' => $users,
             'debug_sql' => $sql
         ]);
@@ -494,10 +548,16 @@ $app->put('/api/admin/users/{id}/role', function (Request $request, Response $re
         $role = $data['role'] ?? 'user';
 
         // INSECURE: No admin role check. Anyone can change any user role.
-        $sql = "UPDATE users SET role = '$role' WHERE id = $id";
-        $pdo->exec($sql);
+        $sql = 'UPDATE users SET role = :role WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            'role' => $role,
+            'id' => $id,
+        ]);
 
-        $user = $pdo->query("SELECT * FROM users WHERE id = $id")->fetch();
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $user = sanitizeUser($stmt->fetch());
 
         return jsonResponse($response, [
             'message' => 'User role changed without admin verification.',
@@ -516,8 +576,9 @@ $app->delete('/api/admin/persons/{id}', function (Request $request, Response $re
         $id = $args['id'];
 
         // INSECURE: No admin role check.
-        $sql = "DELETE FROM persons WHERE id = $id";
-        $pdo->exec($sql);
+        $sql = 'DELETE FROM persons WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['id' => $id]);
 
         return jsonResponse($response, [
             'message' => 'Admin delete executed without admin role verification.',
