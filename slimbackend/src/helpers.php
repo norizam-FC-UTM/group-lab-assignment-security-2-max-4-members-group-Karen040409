@@ -85,3 +85,17 @@ function normalizedPersonFields(array $data): array
         'notes' => isset($data['notes']) ? (string) $data['notes'] : '',
     ];
 }
+
+function formatProfileUser(?array $user): ?array
+{
+    if (!$user) {
+        return null;
+    }
+
+    return [
+        'id' => (int) $user['id'],
+        'name' => $user['name'],
+        'email' => $user['email'],
+        'role' => $user['role'],
+    ];
+}

@@ -2,7 +2,7 @@
   <div class="card">
     <h2>Login</h2>
     <p class="notice warn">
-      Insecure starter: login stores JWT and user role in localStorage. Students should investigate the risk.
+      Login stores a signed JWT and user profile in localStorage for this lab app.
     </p>
 
     <form @submit.prevent="login">
@@ -60,7 +60,7 @@ export default {
         }
 
         setSession(result.data.token, user)
-        this.message = 'Login successful. Session stored in localStorage.'
+        this.message = 'Login successful. JWT stored in localStorage.'
         this.$router.push('/dashboard')
       } else {
         // INSECURE: display backend error directly.

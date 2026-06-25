@@ -7,6 +7,8 @@ slimbackend/vendor/
 
 # Environment files
 .env
+slimbackend/.env
+slimbackend/jwt.config.local.php
 
 # Logs
 *.log

@@ -1,11 +1,12 @@
-// INSECURE STARTER CODE
-// API helper for Vue CLI. Uses VUE_APP_API_BASE_URL instead of VITE_API_BASE_URL.
+// API helper for Vue CLI. Sends JWT Bearer token on protected requests.
 
-import { getToken } from '@/utils/auth'
+import { getToken, logout } from '@/utils/auth'
 
 const API_BASE = process.env.VUE_APP_API_BASE_URL || 'http://localhost:8080/api'
 
-async function parseResponse(response) {
+const PUBLIC_PATHS = ['/login', '/register']
+
+async function parseResponse(response, path = '') {
   let data = null
   try {
     data = await response.json()
@@ -13,9 +14,13 @@ async function parseResponse(response) {
     data = { error: 'Invalid JSON response' }
   }
 
-// Investigation question:
-// This token is read from localStorage and sent to the backend.
-// What could happen if an attacker can modify localStorage?
+  if (response.status === 401 && !PUBLIC_PATHS.includes(path)) {
+    logout()
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+  }
+
   return {
     ok: response.ok,
     status: response.status,
@@ -27,9 +32,6 @@ function authHeaders(includeJson = true) {
   const headers = {}
   if (includeJson) headers['Content-Type'] = 'application/json'
 
-// Investigation question:
-// This token is read from localStorage and sent to the backend.
-// What could happen if an attacker can modify localStorage?
   const token = getToken()
   if (token) headers['Authorization'] = 'Bearer ' + token
   return headers
@@ -39,7 +41,7 @@ export async function apiGet(path) {
   const response = await fetch(API_BASE + path, {
     headers: authHeaders(false)
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 export async function apiPost(path, body) {
@@ -48,7 +50,7 @@ export async function apiPost(path, body) {
     headers: authHeaders(true),
     body: JSON.stringify(body)
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 export async function apiPut(path, body) {
@@ -57,7 +59,7 @@ export async function apiPut(path, body) {
     headers: authHeaders(true),
     body: JSON.stringify(body)
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 export async function apiDelete(path) {
@@ -65,7 +67,7 @@ export async function apiDelete(path) {
     method: 'DELETE',
     headers: authHeaders(false)
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 export { API_BASE }

@@ -1,5 +1,4 @@
-// INSECURE STARTER CODE
-// This file intentionally trusts localStorage. Students should investigate why this is dangerous.
+// JWT session helpers. Token is stored in localStorage (used consistently in this project).
 
 export function getToken() {
   return localStorage.getItem('jwt')
@@ -23,7 +22,6 @@ export function getRole() {
 }
 
 export function setSession(token, user) {
-  // INSECURE: token and user role are stored in localStorage and can be modified using DevTools.
   localStorage.setItem('jwt', token)
   localStorage.setItem('user', JSON.stringify(user))
 }

@@ -16,6 +16,7 @@ use Slim\Factory\AppFactory;
 require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../src/db.php';
 require __DIR__ . '/../src/helpers.php';
+require __DIR__ . '/../src/jwt.php';
 
 $app = AppFactory::create();
 
@@ -75,38 +76,6 @@ function getRequestData(Request $request): array
     }
 
     return is_array($data) ? $data : [];
-}
-
-// INSECURE: This is NOT a real JWT.
-// This is just base64 JSON. You should replace this with real signed JWT sebagai pembaikan.
-function createFakeToken(array $user): string
-{
-    $payload = [
-        'user_id' => $user['id'],
-        'role' => $user['role'],
-        'email' => $user['email'],
-        'note' => 'INSECURE_FAKE_TOKEN_NO_SIGNATURE_NO_EXPIRY'
-    ];
-
-    return base64_encode(json_encode($payload));
-}
-
-// INSECURE: This trusts an unsigned, editable token.
-// You should replace this with proper JWT verification.
-function getFakeUserFromToken(Request $request): ?array
-{
-    $auth = $request->getHeaderLine('Authorization');
-
-    if (!$auth || !preg_match('/Bearer\s+(\S+)/', $auth, $matches)) {
-        return null;
-    }
-    $json = base64_decode($matches[1], true);
-
-    if (!$json) {
-        return null;
-    }
-    $payload = json_decode($json, true);
-    return is_array($payload) ? $payload : null;
 }
 
 function exposeException(Response $response, Throwable $e): Response
@@ -202,11 +171,10 @@ $app->post('/api/login', function (Request $request, Response $response) {
             ], 401);
         }
 
-        // INSECURE: fake unsigned token with no expiry.
-        $token = createFakeToken($user);
+        $token = createJwtToken($user);
 
         return jsonResponse($response, [
-            'message' => 'Login successful. This token is intentionally insecure.',
+            'message' => 'Login successful.',
             'token' => $token,
             'user' => sanitizeUser($user),
             'debug_received_body' => $data,
@@ -218,250 +186,235 @@ $app->post('/api/login', function (Request $request, Response $response) {
 });
 
 // ----------------------------------------------------------
-// Protected-ish route: Profile
+// JWT-protected routes
 // ----------------------------------------------------------
-$app->get('/api/profile', function (Request $request, Response $response) {
-    try {
-        $pdo = getPDO();
+$app->group('/api', function ($group) {
+    $group->get('/profile', function (Request $request, Response $response) {
+        try {
+            $pdo = getPDO();
+            $userId = getAuthUserId($request);
 
-        // INSECURE:
-        // If token missing, defaults to user 1.
-        // If token exists, trusts unsigned editable token.
-        $fakeUser = getFakeUserFromToken($request);
-        $userId = $fakeUser['user_id'] ?? 1;
+            $stmt = $pdo->prepare('SELECT id, name, email, role FROM users WHERE id = :id');
+            $stmt->execute(['id' => $userId]);
+            $user = formatProfileUser($stmt->fetch());
 
-        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
-        $stmt->execute(['id' => $userId]);
-        $user = sanitizeUser($stmt->fetch());
+            if (!$user) {
+                return jsonResponse($response, ['error' => 'User not found'], 404);
+            }
 
-        return jsonResponse($response, [
-            'message' => 'Profile returned. This route trusts insecure token/default user.',
-            'user' => $user,
-            'token_payload_trusted_by_backend' => $fakeUser
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
+            return jsonResponse($response, $user);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
+        }
+    });
 
-// ----------------------------------------------------------
-// BMI routes
-// ----------------------------------------------------------
-$app->get('/api/persons', function (Request $request, Response $response) {
-    try {
-        $pdo = getPDO();
+    $group->get('/persons', function (Request $request, Response $response) {
+        try {
+            $pdo = getPDO();
 
-        // INSECURE:
-        // Trusts unsigned token. If no token, returns all records.
-        // Also accepts ?user_id= to override owner.
-        $fakeUser = getFakeUserFromToken($request);
-        $params = $request->getQueryParams();
-        $userId = $params['user_id'] ?? ($fakeUser['user_id'] ?? null);
+            // INSECURE: Still accepts ?user_id= to override owner (no ownership check yet).
+            $params = $request->getQueryParams();
+            $userId = $params['user_id'] ?? getAuthUserId($request);
 
-        if ($userId) {
             $sql = 'SELECT * FROM persons WHERE user_id = :user_id ORDER BY id DESC';
             $stmt = $pdo->prepare($sql);
             $stmt->execute(['user_id' => $userId]);
-        } else {
-            $sql = 'SELECT * FROM persons ORDER BY id DESC';
-            $stmt = $pdo->query($sql);
-        }
+            $persons = $stmt->fetchAll();
 
-        $persons = $stmt->fetchAll();
-
-        return jsonResponse($response, [
-            'message' => 'BMI records returned. This route is intentionally weak.',
-            'persons' => $persons,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->post('/api/persons', function (Request $request, Response $response) {
-    try {
-        $pdo = getPDO();
-        $data = getRequestData($request);
-
-        $errors = validatePersonData($data);
-        if (!empty($errors)) {
-            return jsonResponse($response, ['errors' => $errors], 400);
-        }
-
-        // INSECURE: Trusts user_id from frontend.
-        $user_id = $data['user_id'] ?? 1;
-        $fields = normalizedPersonFields($data);
-        $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
-
-        $sql = 'INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
-                VALUES (:user_id, :name, :age, :height, :weight, :bmi, :category, :notes)';
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            'user_id' => $user_id,
-            'name' => $fields['name'],
-            'age' => $fields['age'],
-            'height' => $fields['height'],
-            'weight' => $fields['weight'],
-            'bmi' => $calculated['bmi'],
-            'category' => $calculated['category'],
-            'notes' => $fields['notes'],
-        ]);
-        $id = $pdo->lastInsertId();
-
-        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        $person = $stmt->fetch();
-
-        return jsonResponse($response, [
-            'message' => 'BMI record created. BMI and category calculated at backend.',
-            'person' => $person,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
-        ], 201);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->get('/api/persons/{id}', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
-
-        // TODO: Review whether this route should allow all users to access any record.
-        $sql = 'SELECT * FROM persons WHERE id = :id';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute(['id' => $id]);
-        $person = $stmt->fetch();
-
-        if (!$person) {
-            return jsonResponse($response, ['error' => 'Record not found'], 404);
-        }
-
-        return jsonResponse($response, [
-            'message' => 'Record returned without ownership check.',
-            'person' => $person,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->put('/api/persons/{id}', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
-        $data = getRequestData($request);
-
-        $allowedInInsecureStarter = [
-            'user_id',
-            'name',
-            'age',
-            'height',
-            'weight',
-            'notes'
-        ];
-
-        $hasUpdateField = false;
-        foreach ($allowedInInsecureStarter as $field) {
-            if (array_key_exists($field, $data)) {
-                $hasUpdateField = true;
-                break;
-            }
-        }
-
-        if (!$hasUpdateField) {
             return jsonResponse($response, [
-                'error' => 'No fields to update',
-                'debug_received_body' => $data
-            ], 400);
+                'message' => 'BMI records returned.',
+                'persons' => $persons,
+                'debug_sql' => $sql
+            ]);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
         }
+    });
 
-        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        $existing = $stmt->fetch();
+    $group->post('/persons', function (Request $request, Response $response) {
+        try {
+            $pdo = getPDO();
+            $data = getRequestData($request);
 
-        if (!$existing) {
-            return jsonResponse($response, ['error' => 'Record not found'], 404);
+            $errors = validatePersonData($data);
+            if (!empty($errors)) {
+                return jsonResponse($response, ['errors' => $errors], 400);
+            }
+
+            // INSECURE: Trusts user_id from frontend if provided.
+            $user_id = $data['user_id'] ?? getAuthUserId($request);
+            $fields = normalizedPersonFields($data);
+            $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
+
+            $sql = 'INSERT INTO persons (user_id, name, age, height, weight, bmi, category, notes)
+                    VALUES (:user_id, :name, :age, :height, :weight, :bmi, :category, :notes)';
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                'user_id' => $user_id,
+                'name' => $fields['name'],
+                'age' => $fields['age'],
+                'height' => $fields['height'],
+                'weight' => $fields['weight'],
+                'bmi' => $calculated['bmi'],
+                'category' => $calculated['category'],
+                'notes' => $fields['notes'],
+            ]);
+            $id = $pdo->lastInsertId();
+
+            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $person = $stmt->fetch();
+
+            return jsonResponse($response, [
+                'message' => 'BMI record created. BMI and category calculated at backend.',
+                'person' => $person,
+                'debug_received_body' => $data,
+                'debug_sql' => $sql
+            ], 201);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
         }
+    });
 
-        $merged = [
-            'name' => array_key_exists('name', $data) ? $data['name'] : $existing['name'],
-            'age' => array_key_exists('age', $data) ? $data['age'] : $existing['age'],
-            'height' => array_key_exists('height', $data) ? $data['height'] : $existing['height'],
-            'weight' => array_key_exists('weight', $data) ? $data['weight'] : $existing['weight'],
-            'notes' => array_key_exists('notes', $data) ? $data['notes'] : $existing['notes'],
-        ];
+    $group->get('/persons/{id}', function (Request $request, Response $response, array $args) {
+        try {
+            $pdo = getPDO();
+            $id = $args['id'];
 
-        $errors = validatePersonData($merged);
-        if (!empty($errors)) {
-            return jsonResponse($response, ['errors' => $errors], 400);
+            // TODO: Review whether this route should allow all users to access any record.
+            $sql = 'SELECT * FROM persons WHERE id = :id';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(['id' => $id]);
+            $person = $stmt->fetch();
+
+            if (!$person) {
+                return jsonResponse($response, ['error' => 'Record not found'], 404);
+            }
+
+            return jsonResponse($response, [
+                'message' => 'Record returned without ownership check.',
+                'person' => $person,
+                'debug_sql' => $sql
+            ]);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
         }
+    });
 
-        $fields = normalizedPersonFields($merged);
-        $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
-        $user_id = array_key_exists('user_id', $data) ? $data['user_id'] : $existing['user_id'];
+    $group->put('/persons/{id}', function (Request $request, Response $response, array $args) {
+        try {
+            $pdo = getPDO();
+            $id = $args['id'];
+            $data = getRequestData($request);
 
-        $sql = 'UPDATE persons
-                SET user_id = :user_id,
-                    name = :name,
-                    age = :age,
-                    height = :height,
-                    weight = :weight,
-                    bmi = :bmi,
-                    category = :category,
-                    notes = :notes
-                WHERE id = :id';
+            $allowedInInsecureStarter = [
+                'user_id',
+                'name',
+                'age',
+                'height',
+                'weight',
+                'notes'
+            ];
 
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            'user_id' => $user_id,
-            'name' => $fields['name'],
-            'age' => $fields['age'],
-            'height' => $fields['height'],
-            'weight' => $fields['weight'],
-            'bmi' => $calculated['bmi'],
-            'category' => $calculated['category'],
-            'notes' => $fields['notes'],
-            'id' => $id,
-        ]);
+            $hasUpdateField = false;
+            foreach ($allowedInInsecureStarter as $field) {
+                if (array_key_exists($field, $data)) {
+                    $hasUpdateField = true;
+                    break;
+                }
+            }
 
-        $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        $person = $stmt->fetch();
+            if (!$hasUpdateField) {
+                return jsonResponse($response, [
+                    'error' => 'No fields to update',
+                    'debug_received_body' => $data
+                ], 400);
+            }
 
-        return jsonResponse($response, [
-            'message' => 'BMI record updated. BMI and category recalculated at backend.',
-            'person' => $person,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
+            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $existing = $stmt->fetch();
 
-$app->delete('/api/persons/{id}', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
+            if (!$existing) {
+                return jsonResponse($response, ['error' => 'Record not found'], 404);
+            }
 
-        // INSECURE: No auth, no ownership check, no role check.
-        $sql = 'DELETE FROM persons WHERE id = :id';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute(['id' => $id]);
+            $merged = [
+                'name' => array_key_exists('name', $data) ? $data['name'] : $existing['name'],
+                'age' => array_key_exists('age', $data) ? $data['age'] : $existing['age'],
+                'height' => array_key_exists('height', $data) ? $data['height'] : $existing['height'],
+                'weight' => array_key_exists('weight', $data) ? $data['weight'] : $existing['weight'],
+                'notes' => array_key_exists('notes', $data) ? $data['notes'] : $existing['notes'],
+            ];
 
-        return jsonResponse($response, [
-            'message' => 'BMI record deleted without role or ownership check.',
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
+            $errors = validatePersonData($merged);
+            if (!empty($errors)) {
+                return jsonResponse($response, ['errors' => $errors], 400);
+            }
+
+            $fields = normalizedPersonFields($merged);
+            $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
+            $user_id = array_key_exists('user_id', $data) ? $data['user_id'] : $existing['user_id'];
+
+            $sql = 'UPDATE persons
+                    SET user_id = :user_id,
+                        name = :name,
+                        age = :age,
+                        height = :height,
+                        weight = :weight,
+                        bmi = :bmi,
+                        category = :category,
+                        notes = :notes
+                    WHERE id = :id';
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                'user_id' => $user_id,
+                'name' => $fields['name'],
+                'age' => $fields['age'],
+                'height' => $fields['height'],
+                'weight' => $fields['weight'],
+                'bmi' => $calculated['bmi'],
+                'category' => $calculated['category'],
+                'notes' => $fields['notes'],
+                'id' => $id,
+            ]);
+
+            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $person = $stmt->fetch();
+
+            return jsonResponse($response, [
+                'message' => 'BMI record updated. BMI and category recalculated at backend.',
+                'person' => $person,
+                'debug_received_body' => $data,
+                'debug_sql' => $sql
+            ]);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
+        }
+    });
+
+    $group->delete('/persons/{id}', function (Request $request, Response $response, array $args) {
+        try {
+            $pdo = getPDO();
+            $id = $args['id'];
+
+            // INSECURE: No ownership check, no role check.
+            $sql = 'DELETE FROM persons WHERE id = :id';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(['id' => $id]);
+
+            return jsonResponse($response, [
+                'message' => 'BMI record deleted without role or ownership check.',
+                'debug_sql' => $sql
+            ]);
+        } catch (Throwable $e) {
+            return exposeException($response, $e);
+        }
+    });
+})->add(jwtAuthMiddleware());
 
 // ----------------------------------------------------------
 // Staff routes

@@ -37,11 +37,13 @@ router.beforeEach((to, from, next) => {
     return next('/login')
   }
 
+  if ((to.path === '/login' || to.path === '/register') && isLoggedIn()) {
+    return next('/dashboard')
+  }
+
   // Investigation question:
-// This route guard checks role from localStorage.
-// Does this protect the backend API, or only hide frontend pages?
-// Frontend route guard improves user experience.
-// Backend route protection protects data.
+  // This route guard checks role from localStorage.
+  // Does this protect the backend API, or only hide frontend pages?
   if (to.meta.roles && !to.meta.roles.includes(getRole())) {
     return next('/unauthorized')
   }
