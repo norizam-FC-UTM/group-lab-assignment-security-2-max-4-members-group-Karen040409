@@ -212,9 +212,7 @@ $app->group('/api', function ($group) {
         try {
             $pdo = getPDO();
 
-            // INSECURE: Still accepts ?user_id= to override owner (no ownership check yet).
-            $params = $request->getQueryParams();
-            $userId = $params['user_id'] ?? getAuthUserId($request);
+            $userId = getAuthUserId($request);
 
             $sql = 'SELECT * FROM persons WHERE user_id = :user_id ORDER BY id DESC';
             $stmt = $pdo->prepare($sql);
@@ -224,7 +222,6 @@ $app->group('/api', function ($group) {
             return jsonResponse($response, [
                 'message' => 'BMI records returned.',
                 'persons' => $persons,
-                'debug_sql' => $sql
             ]);
         } catch (Throwable $e) {
             return exposeException($response, $e);
@@ -234,15 +231,14 @@ $app->group('/api', function ($group) {
     $group->post('/persons', function (Request $request, Response $response) {
         try {
             $pdo = getPDO();
-            $data = getRequestData($request);
+            $data = filterAllowedPersonInput(getRequestData($request));
 
             $errors = validatePersonData($data);
             if (!empty($errors)) {
                 return jsonResponse($response, ['errors' => $errors], 400);
             }
 
-            // INSECURE: Trusts user_id from frontend if provided.
-            $user_id = $data['user_id'] ?? getAuthUserId($request);
+            $userId = getAuthUserId($request);
             $fields = normalizedPersonFields($data);
             $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
 
@@ -251,7 +247,7 @@ $app->group('/api', function ($group) {
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
-                'user_id' => $user_id,
+                'user_id' => $userId,
                 'name' => $fields['name'],
                 'age' => $fields['age'],
                 'height' => $fields['height'],
@@ -261,16 +257,11 @@ $app->group('/api', function ($group) {
                 'notes' => $fields['notes'],
             ]);
             $id = $pdo->lastInsertId();
-
-            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-            $stmt->execute(['id' => $id]);
-            $person = $stmt->fetch();
+            $person = fetchPersonById($pdo, $id);
 
             return jsonResponse($response, [
-                'message' => 'BMI record created. BMI and category calculated at backend.',
+                'message' => 'BMI record created.',
                 'person' => $person,
-                'debug_received_body' => $data,
-                'debug_sql' => $sql
             ], 201);
         } catch (Throwable $e) {
             return exposeException($response, $e);
@@ -282,20 +273,19 @@ $app->group('/api', function ($group) {
             $pdo = getPDO();
             $id = $args['id'];
 
-            // TODO: Review whether this route should allow all users to access any record.
-            $sql = 'SELECT * FROM persons WHERE id = :id';
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['id' => $id]);
-            $person = $stmt->fetch();
+            $person = fetchPersonById($pdo, $id);
 
             if (!$person) {
                 return jsonResponse($response, ['error' => 'Record not found'], 404);
             }
 
+            if (!canAccessPersonOnUserRoute($request, $person)) {
+                return jwtForbiddenResponse();
+            }
+
             return jsonResponse($response, [
-                'message' => 'Record returned without ownership check.',
+                'message' => 'BMI record returned.',
                 'person' => $person,
-                'debug_sql' => $sql
             ]);
         } catch (Throwable $e) {
             return exposeException($response, $e);
@@ -306,38 +296,20 @@ $app->group('/api', function ($group) {
         try {
             $pdo = getPDO();
             $id = $args['id'];
-            $data = getRequestData($request);
+            $data = filterAllowedPersonInput(getRequestData($request));
 
-            $allowedInInsecureStarter = [
-                'user_id',
-                'name',
-                'age',
-                'height',
-                'weight',
-                'notes'
-            ];
-
-            $hasUpdateField = false;
-            foreach ($allowedInInsecureStarter as $field) {
-                if (array_key_exists($field, $data)) {
-                    $hasUpdateField = true;
-                    break;
-                }
+            if (!hasAllowedPersonField($data)) {
+                return jsonResponse($response, ['error' => 'No fields to update'], 400);
             }
 
-            if (!$hasUpdateField) {
-                return jsonResponse($response, [
-                    'error' => 'No fields to update',
-                    'debug_received_body' => $data
-                ], 400);
-            }
-
-            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-            $stmt->execute(['id' => $id]);
-            $existing = $stmt->fetch();
+            $existing = fetchPersonById($pdo, $id);
 
             if (!$existing) {
                 return jsonResponse($response, ['error' => 'Record not found'], 404);
+            }
+
+            if (!canAccessPersonOnUserRoute($request, $existing)) {
+                return jwtForbiddenResponse();
             }
 
             $merged = [
@@ -355,11 +327,9 @@ $app->group('/api', function ($group) {
 
             $fields = normalizedPersonFields($merged);
             $calculated = calculateBmiAndCategory($fields['height'], $fields['weight']);
-            $user_id = array_key_exists('user_id', $data) ? $data['user_id'] : $existing['user_id'];
 
             $sql = 'UPDATE persons
-                    SET user_id = :user_id,
-                        name = :name,
+                    SET name = :name,
                         age = :age,
                         height = :height,
                         weight = :weight,
@@ -370,7 +340,6 @@ $app->group('/api', function ($group) {
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
-                'user_id' => $user_id,
                 'name' => $fields['name'],
                 'age' => $fields['age'],
                 'height' => $fields['height'],
@@ -381,15 +350,11 @@ $app->group('/api', function ($group) {
                 'id' => $id,
             ]);
 
-            $stmt = $pdo->prepare('SELECT * FROM persons WHERE id = :id');
-            $stmt->execute(['id' => $id]);
-            $person = $stmt->fetch();
+            $person = fetchPersonById($pdo, $id);
 
             return jsonResponse($response, [
-                'message' => 'BMI record updated. BMI and category recalculated at backend.',
+                'message' => 'BMI record updated.',
                 'person' => $person,
-                'debug_received_body' => $data,
-                'debug_sql' => $sql
             ]);
         } catch (Throwable $e) {
             return exposeException($response, $e);
@@ -401,146 +366,152 @@ $app->group('/api', function ($group) {
             $pdo = getPDO();
             $id = $args['id'];
 
-            // INSECURE: No ownership check, no role check.
-            $sql = 'DELETE FROM persons WHERE id = :id';
-            $stmt = $pdo->prepare($sql);
+            $person = fetchPersonById($pdo, $id);
+
+            if (!$person) {
+                return jsonResponse($response, ['error' => 'Record not found'], 404);
+            }
+
+            if (!canDeletePersonOnUserRoute($request, $person)) {
+                return jwtForbiddenResponse();
+            }
+
+            $stmt = $pdo->prepare('DELETE FROM persons WHERE id = :id');
             $stmt->execute(['id' => $id]);
 
             return jsonResponse($response, [
-                'message' => 'BMI record deleted without role or ownership check.',
-                'debug_sql' => $sql
+                'message' => 'BMI record deleted.',
             ]);
         } catch (Throwable $e) {
             return exposeException($response, $e);
         }
     });
+
+    $group->group('/staff', function ($staffGroup) {
+        $staffGroup->get('/persons', function (Request $request, Response $response) {
+            try {
+                $pdo = getPDO();
+
+                $sql = "SELECT persons.*, users.email AS owner_email, users.role AS owner_role
+                        FROM persons
+                        JOIN users ON persons.user_id = users.id
+                        ORDER BY persons.id DESC";
+
+                $persons = $pdo->query($sql)->fetchAll();
+
+                return jsonResponse($response, [
+                    'message' => 'All BMI records returned.',
+                    'persons' => $persons,
+                ]);
+            } catch (Throwable $e) {
+                return exposeException($response, $e);
+            }
+        });
+
+        $staffGroup->get('/persons/{id}', function (Request $request, Response $response, array $args) {
+            try {
+                $pdo = getPDO();
+                $id = $args['id'];
+
+                $sql = 'SELECT persons.*, users.email AS owner_email, users.role AS owner_role
+                        FROM persons
+                        JOIN users ON persons.user_id = users.id
+                        WHERE persons.id = :id';
+
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute(['id' => $id]);
+                $person = $stmt->fetch();
+
+                if (!$person) {
+                    return jsonResponse($response, ['error' => 'Record not found'], 404);
+                }
+
+                return jsonResponse($response, [
+                    'message' => 'BMI record returned.',
+                    'person' => $person,
+                ]);
+            } catch (Throwable $e) {
+                return exposeException($response, $e);
+            }
+        });
+    })->add(requireRolesMiddleware(['staff', 'admin']));
+
+    $group->group('/admin', function ($adminGroup) {
+        $adminGroup->get('/users', function (Request $request, Response $response) {
+            try {
+                $pdo = getPDO();
+
+                $sql = 'SELECT * FROM users ORDER BY id ASC';
+                $stmt = $pdo->query($sql);
+                $users = sanitizeUsers($stmt->fetchAll());
+
+                return jsonResponse($response, [
+                    'message' => 'All users returned.',
+                    'users' => $users,
+                ]);
+            } catch (Throwable $e) {
+                return exposeException($response, $e);
+            }
+        });
+
+        $adminGroup->put('/users/{id}/role', function (Request $request, Response $response, array $args) {
+            try {
+                $pdo = getPDO();
+                $id = $args['id'];
+                $data = getRequestData($request);
+                $role = $data['role'] ?? '';
+
+                if (!isValidRole($role)) {
+                    return jsonResponse($response, ['error' => 'Invalid role'], 400);
+                }
+
+                $sql = 'UPDATE users SET role = :role WHERE id = :id';
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    'role' => $role,
+                    'id' => $id,
+                ]);
+
+                $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+                $stmt->execute(['id' => $id]);
+                $user = sanitizeUser($stmt->fetch());
+
+                if (!$user) {
+                    return jsonResponse($response, ['error' => 'User not found'], 404);
+                }
+
+                return jsonResponse($response, [
+                    'message' => 'User role updated.',
+                    'user' => $user,
+                ]);
+            } catch (Throwable $e) {
+                return exposeException($response, $e);
+            }
+        });
+
+        $adminGroup->delete('/persons/{id}', function (Request $request, Response $response, array $args) {
+            try {
+                $pdo = getPDO();
+                $id = $args['id'];
+
+                $person = fetchPersonById($pdo, $id);
+
+                if (!$person) {
+                    return jsonResponse($response, ['error' => 'Record not found'], 404);
+                }
+
+                $stmt = $pdo->prepare('DELETE FROM persons WHERE id = :id');
+                $stmt->execute(['id' => $id]);
+
+                return jsonResponse($response, [
+                    'message' => 'BMI record deleted.',
+                ]);
+            } catch (Throwable $e) {
+                return exposeException($response, $e);
+            }
+        });
+    })->add(requireRolesMiddleware(['admin']));
 })->add(jwtAuthMiddleware());
-
-// ----------------------------------------------------------
-// Staff routes
-// ----------------------------------------------------------
-$app->get('/api/staff/persons', function (Request $request, Response $response) {
-    try {
-        $pdo = getPDO();
-
-        // INSECURE: No staff/admin role check.
-        $sql = "SELECT persons.*, users.email AS owner_email, users.role AS owner_role
-                FROM persons
-                JOIN users ON persons.user_id = users.id
-                ORDER BY persons.id DESC";
-
-        $persons = $pdo->query($sql)->fetchAll();
-
-        return jsonResponse($response, [
-            'message' => 'All BMI records returned without staff role check.',
-            'persons' => $persons,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->get('/api/staff/persons/{id}', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
-
-        // INSECURE - Review whether this route should allow all users
-        $sql = 'SELECT persons.*, users.email AS owner_email, users.role AS owner_role
-                FROM persons
-                JOIN users ON persons.user_id = users.id
-                WHERE persons.id = :id';
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute(['id' => $id]);
-        $person = $stmt->fetch();
-
-        if (!$person) {
-            return jsonResponse($response, ['error' => 'Record not found'], 404);
-        }
-
-        return jsonResponse($response, [
-            'message' => 'Staff record returned without role check.',
-            'person' => $person,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-// ----------------------------------------------------------
-// Admin routes
-// ----------------------------------------------------------
-$app->get('/api/admin/users', function (Request $request, Response $response) {
-    try {
-        $pdo = getPDO();
-
-        // INSECURE:
-        // - No admin role check.
-        $sql = 'SELECT * FROM users ORDER BY id ASC';
-        $stmt = $pdo->query($sql);
-        $users = sanitizeUsers($stmt->fetchAll());
-
-        return jsonResponse($response, [
-            'message' => 'All users returned without admin role check.',
-            'users' => $users,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->put('/api/admin/users/{id}/role', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
-        $data = getRequestData($request);
-        $role = $data['role'] ?? 'user';
-
-        // INSECURE: No admin role check. Anyone can change any user role.
-        $sql = 'UPDATE users SET role = :role WHERE id = :id';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            'role' => $role,
-            'id' => $id,
-        ]);
-
-        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        $user = sanitizeUser($stmt->fetch());
-
-        return jsonResponse($response, [
-            'message' => 'User role changed without admin verification.',
-            'user' => $user,
-            'debug_received_body' => $data,
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
-
-$app->delete('/api/admin/persons/{id}', function (Request $request, Response $response, array $args) {
-    try {
-        $pdo = getPDO();
-        $id = $args['id'];
-
-        // INSECURE: No admin role check.
-        $sql = 'DELETE FROM persons WHERE id = :id';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute(['id' => $id]);
-
-        return jsonResponse($response, [
-            'message' => 'Admin delete executed without admin role verification.',
-            'debug_sql' => $sql
-        ]);
-    } catch (Throwable $e) {
-        return exposeException($response, $e);
-    }
-});
 
 // Preflight catch-all
 $app->options('/{routes:.+}', function (Request $request, Response $response) {

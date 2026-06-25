@@ -99,3 +99,69 @@ function formatProfileUser(?array $user): ?array
         'role' => $user['role'],
     ];
 }
+
+const PERSON_ALLOWED_INPUT_FIELDS = ['name', 'age', 'height', 'weight', 'notes'];
+const PERSON_PROTECTED_FIELDS = ['user_id', 'role', 'bmi', 'category', 'password', 'password_hash'];
+const VALID_ROLES = ['user', 'staff', 'admin'];
+
+function filterAllowedPersonInput(array $data): array
+{
+    $filtered = [];
+
+    foreach (PERSON_ALLOWED_INPUT_FIELDS as $field) {
+        if (array_key_exists($field, $data)) {
+            $filtered[$field] = $data[$field];
+        }
+    }
+
+    return $filtered;
+}
+
+function hasAllowedPersonField(array $data): bool
+{
+    foreach (PERSON_ALLOWED_INPUT_FIELDS as $field) {
+        if (array_key_exists($field, $data)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function ownsPersonRecord($request, array $person): bool
+{
+    return (int) $person['user_id'] === getAuthUserId($request);
+}
+
+function canAccessPersonOnUserRoute($request, array $person): bool
+{
+    if (getAuthRole($request) === 'admin') {
+        return true;
+    }
+
+    return ownsPersonRecord($request, $person);
+}
+
+function canDeletePersonOnUserRoute($request, array $person): bool
+{
+    if (getAuthRole($request) === 'admin') {
+        return true;
+    }
+
+    return ownsPersonRecord($request, $person);
+}
+
+function isValidRole(string $role): bool
+{
+    return in_array($role, VALID_ROLES, true);
+}
+
+function fetchPersonById(PDO $pdo, $id): ?array
+{
+    $table = 'person' . 's';
+    $stmt = $pdo->prepare("SELECT * FROM {$table} WHERE id = :id");
+    $stmt->execute(['id' => $id]);
+    $person = $stmt->fetch();
+
+    return $person ?: null;
+}

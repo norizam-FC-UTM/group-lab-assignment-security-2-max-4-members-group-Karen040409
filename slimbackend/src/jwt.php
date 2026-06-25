@@ -130,3 +130,24 @@ function getAuthRole(Request $request): string
 {
     return (string) $request->getAttribute('role');
 }
+
+function jwtForbiddenResponse(): Response
+{
+    $response = new SlimResponse();
+    $response->getBody()->write(json_encode(['error' => 'Forbidden'], JSON_PRETTY_PRINT));
+
+    return $response
+        ->withHeader('Content-Type', 'application/json')
+        ->withStatus(403);
+}
+
+function requireRolesMiddleware(array $roles): callable
+{
+    return function (Request $request, $handler) use ($roles) {
+        if (!in_array(getAuthRole($request), $roles, true)) {
+            return jwtForbiddenResponse();
+        }
+
+        return $handler->handle($request);
+    };
+}
