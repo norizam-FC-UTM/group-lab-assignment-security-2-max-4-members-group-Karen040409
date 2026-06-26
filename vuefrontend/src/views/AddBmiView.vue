@@ -9,44 +9,31 @@
     <div v-if="message" class="notice" :class="ok ? 'good' : 'danger'">
       {{ message }}
     </div>
-
-    <div v-if="rawResponse" class="card">
-      <h3>Raw API response</h3>
-      <pre class="code">{{ rawResponse }}</pre>
-    </div>
   </div>
 </template>
 
 <script>
 import BmiForm from '@/components/BmiForm.vue'
-import { apiPost } from '@/services/api'
+import { apiPost, formatApiMessage } from '@/services/api'
 
 export default {
   name: 'AddBmiView',
-
-  components: {
-    BmiForm
-  },
-
+  components: { BmiForm },
   data() {
     return {
       message: '',
-      ok: false,
-      rawResponse: ''
+      ok: false
     }
   },
-
   methods: {
     async save(payload) {
-      console.log('AddBmiView received payload:', payload)
-
       const result = await apiPost('/persons', payload)
-
-      console.log('Backend result:', result)
-
-      this.rawResponse = JSON.stringify(result, null, 2)
       this.ok = result.ok
-      this.message = result.data.message || result.data.error || 'Request completed'
+      this.message = formatApiMessage(result)
+
+      if (result.ok) {
+        setTimeout(() => this.$router.push('/my-bmi'), 1500)
+      }
     }
   }
 }

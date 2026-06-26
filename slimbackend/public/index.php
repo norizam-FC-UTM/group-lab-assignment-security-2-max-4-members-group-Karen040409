@@ -1,13 +1,4 @@
 <?php
-// ==========================================================
-// SECJ3483 Web Technology
-// Person BMI Insecure Slim Backend Starter
-// ==========================================================
-// NOTA:
-// This backend is intentionally insecure.
-// provided for investigation and fixing during lab activiy this week.
-// Do NOT use this code in real applications.
-// ==========================================================
 
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -37,7 +28,7 @@ $app->add(function (Request $request, $handler) {
     }
 
     return $response
-        ->withHeader('Access-Control-Allow-Origin', '*') // INSECURE: convenient untuk aktiviti lab, tidak untuk production.
+        ->withHeader('Access-Control-Allow-Origin', '*')
         ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
         ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         ->withHeader('Access-Control-Allow-Credentials', 'false');
@@ -55,7 +46,6 @@ function jsonResponse(Response $response, $data, int $status = 200): Response
         ->withStatus($status);
 }
 
-//
 function getRequestData(Request $request): array
 {
     $data = $request->getParsedBody();
@@ -89,15 +79,15 @@ function handleApiException(Response $response, Throwable $e): Response
 // ----------------------------------------------------------
 $app->get('/', function (Request $request, Response $response) {
     return jsonResponse($response, [
-        'message' => 'Person BMI Insecure Slim Backend Starter',
-        'warning' => 'This backend is intentionally insecure for classroom investigation.'
+        'message' => 'Person BMI API',
+        'status' => 'ok'
     ]);
 });
 
 $app->get('/api/health', function (Request $request, Response $response) {
     return jsonResponse($response, [
         'status' => 'ok',
-        'api' => 'person-bmi-insecure-backend'
+        'api' => 'person-bmi-api'
     ]);
 });
 

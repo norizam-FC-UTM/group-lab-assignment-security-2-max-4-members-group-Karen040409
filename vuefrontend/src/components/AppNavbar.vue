@@ -1,8 +1,7 @@
 <template>
   <header class="navbar">
-    <div class="brand">Person BMI Security Lab</div>
+    <div class="brand">Person BMI App</div>
     <nav class="nav-links">
-      <router-link to="/investigation-guide">Investigation Guide</router-link>
       <router-link v-if="loggedIn" to="/dashboard">Dashboard</router-link>
       <router-link v-if="loggedIn" to="/my-bmi">My BMI</router-link>
       <router-link v-if="loggedIn" to="/add-bmi">Add BMI</router-link>
@@ -16,7 +15,7 @@
 </template>
 
 <script>
-import { getStoredUser, getRole, isLoggedIn, logout } from '@/utils/auth'
+import { getRole, isLoggedIn, logout } from '@/utils/auth'
 
 export default {
   name: 'AppNavbar',
@@ -26,9 +25,6 @@ export default {
     },
     role() {
       return getRole()
-    },
-    user() {
-      return getStoredUser()
     }
   },
   methods: {

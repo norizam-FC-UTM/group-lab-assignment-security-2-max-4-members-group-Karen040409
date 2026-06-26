@@ -70,4 +70,33 @@ export async function apiDelete(path) {
   return parseResponse(response, path)
 }
 
+export function formatApiMessage(result, fallback = 'Request failed') {
+  const data = result?.data || {}
+
+  if (data.message) {
+    return data.message
+  }
+
+  if (data.error) {
+    return data.error
+  }
+
+  if (data.errors && typeof data.errors === 'object') {
+    return Object.values(data.errors).join(' ')
+  }
+
+  if (!result?.ok) {
+    const statusMessages = {
+      400: 'Invalid request',
+      401: 'Unauthorized',
+      403: 'Access denied',
+      404: 'Not found',
+      500: 'Unable to process request'
+    }
+    return statusMessages[result.status] || fallback
+  }
+
+  return ''
+}
+
 export { API_BASE }

@@ -1,6 +1,3 @@
-// INSECURE STARTER CODE
-// Frontend route guard trusts localStorage role. Students should discover this is not real security.
-
 import { createRouter, createWebHistory } from 'vue-router'
 import { isLoggedIn, getRole } from '@/utils/auth'
 
@@ -11,7 +8,6 @@ import MyBmiView from '@/views/MyBmiView.vue'
 import AddBmiView from '@/views/AddBmiView.vue'
 import StaffBmiMonitorView from '@/views/StaffBmiMonitorView.vue'
 import AdminUsersView from '@/views/AdminUsersView.vue'
-import InvestigationGuideView from '@/views/InvestigationGuideView.vue'
 import UnauthorizedView from '@/views/UnauthorizedView.vue'
 
 const routes = [
@@ -23,7 +19,6 @@ const routes = [
   { path: '/add-bmi', name: 'add-bmi', component: AddBmiView, meta: { requiresAuth: true } },
   { path: '/staff/bmi-records', name: 'staff-bmi', component: StaffBmiMonitorView, meta: { requiresAuth: true, roles: ['staff', 'admin'] } },
   { path: '/admin/users', name: 'admin-users', component: AdminUsersView, meta: { requiresAuth: true, roles: ['admin'] } },
-  { path: '/investigation-guide', name: 'investigation-guide', component: InvestigationGuideView },
   { path: '/unauthorized', name: 'unauthorized', component: UnauthorizedView }
 ]
 
@@ -41,9 +36,6 @@ router.beforeEach((to, from, next) => {
     return next('/dashboard')
   }
 
-  // Investigation question:
-  // This route guard checks role from localStorage.
-  // Does this protect the backend API, or only hide frontend pages?
   if (to.meta.roles && !to.meta.roles.includes(getRole())) {
     return next('/unauthorized')
   }

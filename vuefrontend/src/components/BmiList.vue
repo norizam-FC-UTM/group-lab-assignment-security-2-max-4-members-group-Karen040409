@@ -9,7 +9,6 @@
         :key="person.id"
         :person="person"
         @delete="$emit('delete', $event)"
-        @try-other-id="$emit('try-other-id', $event)"
       />
     </div>
   </div>

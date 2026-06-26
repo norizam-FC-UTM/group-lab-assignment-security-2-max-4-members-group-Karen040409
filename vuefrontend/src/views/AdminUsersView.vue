@@ -2,22 +2,15 @@
   <div>
     <div class="card">
       <h2>Admin Users</h2>
-      <p class="notice danger">
-        Insecure starter: If you modified localStorage role to admin, this page may become visible. Backend must still block non-admin tokens.
-      </p>
-      <button class="btn" @click="loadUsers">Load Users</button>
+      <button class="btn" @click="loadUsers">Refresh</button>
     </div>
 
     <div v-if="message" class="notice" :class="ok ? 'good' : 'danger'">{{ message }}</div>
-    <div v-if="rawResponse" class="card">
-      <h3>Raw API response</h3>
-      <div class="code">{{ rawResponse }}</div>
-    </div>
 
     <div class="card table-wrap" v-if="users.length">
       <table>
         <thead>
-          <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Dangerous Role Update</th></tr>
+          <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Update Role</th></tr>
         </thead>
         <tbody>
           <tr v-for="u in users" :key="u.id">
@@ -31,7 +24,7 @@
                 <option value="staff">staff</option>
                 <option value="admin">admin</option>
               </select>
-              <button class="btn warning" @click="changeRole(u)">Change Role</button>
+              <button class="btn secondary" @click="changeRole(u)">Save</button>
             </td>
           </tr>
         </tbody>
@@ -41,7 +34,7 @@
 </template>
 
 <script>
-import { apiGet, apiPut } from '@/services/api'
+import { apiGet, apiPut, formatApiMessage } from '@/services/api'
 import UserRoleBadge from '@/components/UserRoleBadge.vue'
 
 export default {
@@ -51,8 +44,7 @@ export default {
     return {
       users: [],
       message: '',
-      ok: false,
-      rawResponse: ''
+      ok: false
     }
   },
   mounted() {
@@ -61,18 +53,15 @@ export default {
   methods: {
     async loadUsers() {
       const result = await apiGet('/admin/users')
-      this.rawResponse = JSON.stringify(result, null, 2)
       this.ok = result.ok
-      this.message = result.data.message || result.data.error || ''
+      this.message = formatApiMessage(result)
       const list = Array.isArray(result.data) ? result.data : (result.data.users || [])
       this.users = list.map(u => ({ ...u, newRole: u.role }))
     },
     async changeRole(user) {
-      // Backend must verify admin role; frontend control is not enough.
       const result = await apiPut('/admin/users/' + user.id + '/role', { role: user.newRole })
-      this.rawResponse = JSON.stringify(result, null, 2)
       this.ok = result.ok
-      this.message = result.data.message || result.data.error || 'Request completed'
+      this.message = formatApiMessage(result)
       this.loadUsers()
     }
   }

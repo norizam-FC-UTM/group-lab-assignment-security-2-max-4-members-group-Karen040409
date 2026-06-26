@@ -100,9 +100,14 @@ th, td { border: 1px solid var(--line); padding: 9px; vertical-align: top; }
   white-space: pre-wrap;
   overflow-x: auto;
 }
-.debug-panel {
-  border: 2px dashed var(--danger);
-  background: #fff6f6;
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.link-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow .15s ease;
+}
+.link-card:hover {
+  box-shadow: 0 4px 14px rgba(0,0,0,.08);
 }
 .small { font-size: 13px; color: #666; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; }
